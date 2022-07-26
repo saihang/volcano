@@ -87,6 +87,7 @@ func (pp *proportionPlugin) OnSessionOpen(ssn *framework.Session) {
 		guarantee := api.NewResource(queue.Queue.Spec.Guarantee.Resource)
 		pp.totalGuarantee.Add(guarantee)
 	}
+	totalShareResource := pp.totalResource.Clone().Sub(pp.totalGuarantee)
 	klog.V(4).Infof("The total guarantee resource is <%v>", pp.totalGuarantee)
 	// Build attributes for Queues.
 	for _, job := range ssn.Jobs {
@@ -209,12 +210,36 @@ func (pp *proportionPlugin) OnSessionOpen(ssn *framework.Session) {
 			}
 
 			oldDeserved := attr.deserved.Clone()
-			attr.deserved.Add(remaining.Clone().Multi(float64(attr.weight) / float64(totalWeight)))
-
-			if attr.realCapability != nil {
-				attr.deserved.MinDimensionResource(attr.realCapability, api.Infinity)
+			var deserved *api.Resource
+			var guarantee *api.Resource
+			if attr.guarantee == nil {
+				weightResource := remaining.Clone().Multi(float64(attr.weight) / float64(totalWeight))
+				deserved = helpers.Min(weightResource, attr.realCapability)
+				// when guarantee is nil, use the min of weightResource、realCapability、request
+				deserved = helpers.Min(attr.request, deserved)
+				guarantee = api.EmptyResource()
+			} else {
+				// the resource at least guarantee
+				deserved = helpers.Max(attr.request, attr.guarantee)
+				// the resource can not more than real capability
+				deserved = helpers.Min(deserved, attr.realCapability)
+				guarantee = attr.guarantee
 			}
-			attr.deserved.MinDimensionResource(attr.request, api.Zero)
+			// the resource exceed guarantee will occupy total share resource
+			extraResource := deserved.Clone().Sub(guarantee)
+			// extra resource can not exceed total share resource
+			extraResource = helpers.Min(extraResource, totalShareResource)
+			// finally resource = guarantee + extraResource
+			attr.deserved = guarantee.Clone().Add(extraResource)
+			// total share resource sub extraResource
+			totalShareResource.Sub(extraResource)
+
+			//attr.deserved.Add(remaining.Clone().Multi(float64(attr.weight) / float64(totalWeight)))
+			//
+			//if attr.realCapability != nil {
+			//	attr.deserved.MinDimensionResource(attr.realCapability, api.Infinity)
+			//}
+			//attr.deserved.MinDimensionResource(attr.request, api.Zero)
 
 			klog.V(4).Infof("Format queue <%s> deserved resource to <%v>", attr.name, attr.deserved)
 
@@ -224,11 +249,14 @@ func (pp *proportionPlugin) OnSessionOpen(ssn *framework.Session) {
 			} else if reflect.DeepEqual(attr.deserved, oldDeserved) {
 				meet[attr.queueID] = struct{}{}
 				klog.V(4).Infof("queue <%s> is meet cause of the capability", attr.name)
+			} else {
+				meet[attr.queueID] = struct{}{}
+				klog.V(4).Infof("queue <%s> is meet cause of other condition", attr.name)
 			}
-			attr.deserved = helpers.Max(attr.deserved, attr.guarantee)
+			//attr.deserved = helpers.Max(attr.deserved, attr.guarantee)
 			pp.updateShare(attr)
 
-			klog.V(4).Infof("The attributes of queue <%s> in proportion: deserved <%v>, realCapability <%v>, allocate <%v>, request <%v>, elastic <%v>, share <%0.2f>",
+			klog.V(0).Infof("The attributes of queue <%s> in proportion: deserved <%v>, realCapability <%v>, allocate <%v>, request <%v>, elastic <%v>, share <%0.2f>",
 				attr.name, attr.deserved, attr.realCapability, attr.allocated, attr.request, attr.elastic, attr.share)
 
 			increased, decreased := attr.deserved.Diff(oldDeserved, api.Zero)
