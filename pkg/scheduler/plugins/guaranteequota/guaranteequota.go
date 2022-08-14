@@ -1,9 +1,12 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2022 The Volcano Authors.
+
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
+
     http://www.apache.org/licenses/LICENSE-2.0
+
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -11,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package proportion
+package guaranteequota
 
 import (
 	v1 "k8s.io/api/core/v1"
@@ -27,9 +30,9 @@ import (
 )
 
 // PluginName indicates name of volcano scheduler plugin.
-const PluginName = "proportion"
+const PluginName = "guaranteequota"
 
-type proportionPlugin struct {
+type Plugin struct {
 	totalResource  *api.Resource
 	totalGuarantee *api.Resource
 	queueOpts      map[api.QueueID]*queueAttr
@@ -58,7 +61,7 @@ type queueAttr struct {
 
 // New return proportion action
 func New(arguments framework.Arguments) framework.Plugin {
-	return &proportionPlugin{
+	return &Plugin{
 		totalResource:   api.EmptyResource(),
 		totalGuarantee:  api.EmptyResource(),
 		queueOpts:       map[api.QueueID]*queueAttr{},
@@ -66,11 +69,11 @@ func New(arguments framework.Arguments) framework.Plugin {
 	}
 }
 
-func (pp *proportionPlugin) Name() string {
+func (pp *Plugin) Name() string {
 	return PluginName
 }
 
-func (pp *proportionPlugin) OnSessionOpen(ssn *framework.Session) {
+func (pp *Plugin) OnSessionOpen(ssn *framework.Session) {
 	// Prepare scheduling data for this session.
 	pp.totalResource.Add(ssn.TotalResource)
 
@@ -198,7 +201,7 @@ func (pp *proportionPlugin) OnSessionOpen(ssn *framework.Session) {
 		//attr.deserved = helpers.Max(attr.deserved, attr.guarantee)
 		pp.updateShare(attr)
 
-		klog.V(3).Infof("The attributes of queue <%s> in proportion: deserved <%v>, realCapability <%v>, "+
+		klog.V(4).Infof("The attributes of queue <%s> in proportion: deserved <%v>, realCapability <%v>, "+
 			"allocate <%v>, guarantee <%v>, request <%v>, share <%0.2f>, totalShareResource <%v>",
 			attr.name, attr.deserved, attr.realCapability, attr.allocated, attr.guarantee, attr.request, attr.share, totalShareResource)
 
@@ -217,7 +220,6 @@ func (pp *proportionPlugin) OnSessionOpen(ssn *framework.Session) {
 		if pp.queueOpts[lv.UID].share < pp.queueOpts[rv.UID].share {
 			return -1
 		}
-
 		return 1
 	})
 
@@ -333,13 +335,13 @@ func (pp *proportionPlugin) OnSessionOpen(ssn *framework.Session) {
 	})
 }
 
-func (pp *proportionPlugin) OnSessionClose(ssn *framework.Session) {
+func (pp *Plugin) OnSessionClose(ssn *framework.Session) {
 	pp.totalResource = nil
 	pp.totalGuarantee = nil
 	pp.queueOpts = nil
 }
 
-func (pp *proportionPlugin) updateShare(attr *queueAttr) {
+func (pp *Plugin) updateShare(attr *queueAttr) {
 	res := float64(0)
 
 	// TODO(k82cn): how to handle fragment issues?
