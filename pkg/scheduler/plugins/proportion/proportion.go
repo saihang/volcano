@@ -201,7 +201,7 @@ func (pp *proportionPlugin) OnSessionOpen(ssn *framework.Session) {
 		//attr.deserved = helpers.Max(attr.deserved, attr.guarantee)
 		pp.updateShare(attr)
 
-		klog.V(0).Infof("The attributes of queue <%s> in proportion: deserved <%v>, realCapability <%v>, "+
+		klog.V(3).Infof("The attributes of queue <%s> in proportion: deserved <%v>, realCapability <%v>, "+
 			"allocate <%v>, guarantee <%v>, request <%v>, share <%0.2f>, totalShareResource <%v>",
 			attr.name, attr.deserved, attr.realCapability, attr.allocated, attr.guarantee, attr.request, attr.share, totalShareResource)
 
