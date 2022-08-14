@@ -17,11 +17,9 @@ limitations under the License.
 package proportion
 
 import (
-	"math"
-	"reflect"
-
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog"
+	"math"
 
 	"volcano.sh/apis/pkg/apis/scheduling"
 	"volcano.sh/volcano/pkg/scheduler/api"
@@ -179,100 +177,36 @@ func (pp *proportionPlugin) OnSessionOpen(ssn *framework.Session) {
 		metrics.UpdateQueuePodGroupUnknownCount(attr.name, queue.Queue.Status.Unknown)
 	}
 
-	remaining := pp.totalResource.Clone()
-	meet := map[api.QueueID]struct{}{}
-	for {
-		totalWeight := int32(0)
-		for _, attr := range pp.queueOpts {
-			if _, found := meet[attr.queueID]; found {
-				continue
-			}
-			totalWeight += attr.weight
-		}
+	for _, attr := range pp.queueOpts {
+		totalShareResource.Add(attr.guarantee)
+		subResource := helpers.Max(attr.allocated, attr.guarantee)
+		subResource = helpers.Min(subResource, totalShareResource)
+		totalShareResource.Sub(subResource)
+	}
 
-		// If no queues, break
-		if totalWeight == 0 {
-			klog.V(4).Infof("Exiting when total weight is 0")
-			break
-		}
+	for _, attr := range pp.queueOpts {
+		realGuarantee := helpers.Max(attr.allocated, attr.guarantee)
+		// the resource at least guarantee
+		deserved := helpers.Max(attr.request, realGuarantee)
+		// the resource can not more than real capability
+		deserved = helpers.Min(deserved, attr.realCapability)
+		// the resource exceed guarantee will occupy total share resource
+		extraResource := deserved.Clone().Sub(realGuarantee)
+		// extra resource can not exceed total share resource
+		extraResource = helpers.Min(extraResource, totalShareResource)
+		// finally resource = guarantee + extraResource
+		attr.deserved = realGuarantee.Clone().Add(extraResource)
+		// total share resource sub extraResource
+		totalShareResource.Sub(extraResource)
+		//attr.deserved = helpers.Max(attr.deserved, attr.guarantee)
+		pp.updateShare(attr)
 
-		oldRemaining := remaining.Clone()
-		// Calculates the deserved of each Queue.
-		// increasedDeserved is the increased value for attr.deserved of processed queues
-		// decreasedDeserved is the decreased value for attr.deserved of processed queues
-		increasedDeserved := api.EmptyResource()
-		decreasedDeserved := api.EmptyResource()
-		for _, attr := range pp.queueOpts {
-			klog.V(4).Infof("Considering Queue <%s>: weight <%d>, total weight <%d>.",
-				attr.name, attr.weight, totalWeight)
-			if _, found := meet[attr.queueID]; found {
-				continue
-			}
+		klog.V(0).Infof("The attributes of queue <%s> in proportion: deserved <%v>, realCapability <%v>, "+
+			"allocate <%v>, guarantee <%v>, request <%v>, share <%0.2f>, totalShareResource <%v>",
+			attr.name, attr.deserved, attr.realCapability, attr.allocated, attr.guarantee, attr.request, attr.share, totalShareResource)
 
-			oldDeserved := attr.deserved.Clone()
-			var deserved *api.Resource
-			var guarantee *api.Resource
-			if attr.guarantee == nil {
-				weightResource := remaining.Clone().Multi(float64(attr.weight) / float64(totalWeight))
-				deserved = helpers.Min(weightResource, attr.realCapability)
-				// when guarantee is nil, use the min of weightResource、realCapability、request
-				deserved = helpers.Min(attr.request, deserved)
-				guarantee = api.EmptyResource()
-			} else {
-				// the resource at least guarantee
-				deserved = helpers.Max(attr.request, attr.guarantee)
-				// the resource can not more than real capability
-				deserved = helpers.Min(deserved, attr.realCapability)
-				guarantee = attr.guarantee
-			}
-			// the resource exceed guarantee will occupy total share resource
-			extraResource := deserved.Clone().Sub(guarantee)
-			// extra resource can not exceed total share resource
-			extraResource = helpers.Min(extraResource, totalShareResource)
-			// finally resource = guarantee + extraResource
-			attr.deserved = guarantee.Clone().Add(extraResource)
-			// total share resource sub extraResource
-			totalShareResource.Sub(extraResource)
-
-			//attr.deserved.Add(remaining.Clone().Multi(float64(attr.weight) / float64(totalWeight)))
-			//
-			//if attr.realCapability != nil {
-			//	attr.deserved.MinDimensionResource(attr.realCapability, api.Infinity)
-			//}
-			//attr.deserved.MinDimensionResource(attr.request, api.Zero)
-
-			klog.V(4).Infof("Format queue <%s> deserved resource to <%v>", attr.name, attr.deserved)
-
-			if attr.request.LessEqual(attr.deserved, api.Zero) {
-				meet[attr.queueID] = struct{}{}
-				klog.V(4).Infof("queue <%s> is meet", attr.name)
-			} else if reflect.DeepEqual(attr.deserved, oldDeserved) {
-				meet[attr.queueID] = struct{}{}
-				klog.V(4).Infof("queue <%s> is meet cause of the capability", attr.name)
-			} else {
-				meet[attr.queueID] = struct{}{}
-				klog.V(4).Infof("queue <%s> is meet cause of other condition", attr.name)
-			}
-			//attr.deserved = helpers.Max(attr.deserved, attr.guarantee)
-			pp.updateShare(attr)
-
-			klog.V(0).Infof("The attributes of queue <%s> in proportion: deserved <%v>, realCapability <%v>, allocate <%v>, request <%v>, elastic <%v>, share <%0.2f>",
-				attr.name, attr.deserved, attr.realCapability, attr.allocated, attr.request, attr.elastic, attr.share)
-
-			increased, decreased := attr.deserved.Diff(oldDeserved, api.Zero)
-			increasedDeserved.Add(increased)
-			decreasedDeserved.Add(decreased)
-
-			// Record metrics
-			metrics.UpdateQueueDeserved(attr.name, attr.deserved.MilliCPU, attr.deserved.Memory)
-		}
-
-		remaining.Sub(increasedDeserved).Add(decreasedDeserved)
-		klog.V(4).Infof("Remaining resource is  <%s>", remaining)
-		if remaining.IsEmpty() || reflect.DeepEqual(remaining, oldRemaining) {
-			klog.V(4).Infof("Exiting when remaining is empty or no queue has more reosurce request:  <%v>", remaining)
-			break
-		}
+		// Record metrics
+		metrics.UpdateQueueDeserved(attr.name, attr.deserved.MilliCPU, attr.deserved.Memory)
 	}
 
 	ssn.AddQueueOrderFn(pp.Name(), func(l, r interface{}) int {
